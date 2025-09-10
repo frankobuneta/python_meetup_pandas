@@ -3,10 +3,10 @@ Here are the materials from my presentation on Python Meetup, 9.9, further detai
 
 If you have any questions, reach out to me on linkedin, gmail (name.lastname) or meet me on one of the next meetups.
 
+------------
 
-
-Python Meetup / 9.9.
-Speaker: Franko Buneta, Data Scientist, IBM
+### Python Meetup / 9.9.
+### Speaker: Franko Buneta, Data Scientist, IBM
 
 Title: Beyond the Bamboo Forest: Pandas for the Brave and the Curious
 
