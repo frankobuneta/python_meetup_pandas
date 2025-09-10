@@ -1,0 +1,317 @@
+
+import json
+import typing as tp
+
+import pandas as pd
+
+
+@pd.api.extensions.register_dataframe_accessor('dtype')
+class PandasDtypes:
+
+    def __init__(self, data_frame: pd.DataFrame):
+
+        self._data = data_frame
+
+    def _get_series(self, data_series: tp.Union[pd.Series, str]) -> pd.Series:
+
+        if isinstance(data_series, str):
+            return self._data[data_series]
+        else:
+            return data_series
+
+    def is_datetime(self, data_series: tp.Union[pd.Series, str]) -> bool:
+
+        data_series = self._get_series(data_series)
+        return pd.api.types.is_datetime64_dtype(data_series)
+
+    def is_float(self, data_series: tp.Union[pd.Series, str]) -> bool:
+
+        data_series = self._get_series(data_series)
+
+        # Float can be float64 or Float64
+        return pd.api.types.is_float_dtype(data_series)
+
+    def is_int(self, data_series: tp.Union[pd.Series, str]) -> bool:
+
+        data_series = self._get_series(data_series)
+
+        # Int can be int64 or Int64
+        return pd.api.types.is_integer_dtype(data_series)
+
+    def to_int(self, data_series: pd.Series) -> pd.Series:
+
+        data_series = self._get_series(data_series)
+
+        if self.is_int(data_series):
+            return data_series
+
+        try:
+            return data_series.astype('int64')
+        except pd.errors.IntCastingNaNError as _:
+            return data_series.astype('Int64')
+
+    def view(self) -> dict:
+
+        return {
+            series_name: f'{column_data.dtypes}'
+            for series_name, column_data in self._data.items()}
+
+    def __repr__(self):
+
+        return json.dumps(self.view(), indent=4)
+
+    def view_datetimes(self) -> list:
+
+        return [
+            series_name for series_name, data_series in
+            self._data.items() if self.is_datetime(data_series)]
+
+    def view_ints(self) -> list:
+
+        return [
+            series_name for series_name, data_series in
+            self._data.items() if self.is_int(data_series)]
+
+    def view_floats(self) -> list:
+
+        return [
+            series_name for series_name, data_series in
+            self._data.items() if self.is_float(data_series)]
+
+    def view_objects(self) -> list:
+
+        return [
+            series_name for series_name, column_dtype in
+            self.view().items()
+            if column_dtype == 'object']
+
+    def cast_objects(self, data_frame: pd.DataFrame) -> pd.DataFrame:
+
+        object_dtypes_to_convert = {
+            series_name: 'string' for series_name in
+            self.view_objects()}
+
+        return data_frame.astype(object_dtypes_to_convert)
+
+
+@pd.api.extensions.register_dataframe_accessor('cols')
+class PandasColumns:
+
+    def __init__(self, data_frame: pd.DataFrame):
+
+        self._data = data_frame
+
+    def duplicate(
+            self,
+            right_columns: list,
+            exclude_list: tp.Optional[list] = None) -> list:
+
+        left_columns = self.get()
+
+        if exclude_list:
+            left_columns = self._exclude_items(
+                left_columns, exclude_list)
+            right_columns = self._exclude_items(
+                right_columns, exclude_list)
+
+        return list(set(left_columns) & set(right_columns))
+
+    @staticmethod
+    def _exclude_items(
+            items_list: list,
+            exclude_list: list) -> list:
+
+        return [
+            item for item in items_list
+            if item not in exclude_list]
+
+    def exclude_columns(
+            self,
+            exclude_list: tp.Union[list, str]) -> pd.DataFrame:
+
+        if isinstance(exclude_list, str):
+            exclude_list = [exclude_list]
+
+        return self._data[self._exclude_items(self.get(), exclude_list)]
+
+    def get(
+            self,
+            contains: tp.Optional[str] = None,
+            case_sensitive: bool = False) -> list:
+
+        return self._list_contains(
+            list(self._data.columns), contains, case_sensitive)
+
+    def __repr__(self):
+
+        return f'{self.get()}'
+
+    @staticmethod
+    def _list_contains(
+            items_list: list,
+            contains: tp.Optional[str] = None,
+            case_sensitive: bool = False) -> list:
+
+        if not contains:
+            return items_list
+
+        if case_sensitive is False:
+            contains = contains.lower()
+
+        return [
+            item for item in items_list if
+            contains in (item if case_sensitive else item.lower())]
+
+
+@pd.api.extensions.register_dataframe_accessor('rows')
+class PandasRows:
+
+    def __init__(self, data_frame: pd.DataFrame):
+        self._data = data_frame
+
+    def __repr__(self):
+
+        return str(self._data.shape[0])
+
+
+class MergeErrorDuplicateRows(pd.errors.MergeError):
+    pass
+
+
+class MergeErrorDuplicateColumns(pd.errors.MergeError):
+    pass
+
+
+@pd.api.extensions.register_dataframe_accessor('tools')
+class PandasTools:
+
+    def __init__(self, data_frame: pd.DataFrame):
+
+        self._data = data_frame
+
+    def merge_safe(
+            self,
+            right_df: pd.DataFrame,
+            on: tp.Union[list, str],
+            how: tp.Literal['left', 'right', 'inner', 'outer', 'cross'] = 'left',
+            indicator: tp.Union[str, bool] = False) -> pd.DataFrame:
+
+        # It is also possible to just kwargs everything after indicator
+
+        err_msg = f'\nLeft: {self._data.attrs["name"]}\n'
+        err_msg += f'Right: {right_df.attrs["name"]}\n'
+
+        # Convert on to list
+        if isinstance(on, str):
+            on = [on]
+
+        # Are there any duplicate column names in left_df, right_df?
+
+        duplicates_result = self._duplicate(
+            list(right_df.columns),
+            on)
+
+        if len(duplicates_result) > 0:
+            err_msg += f'Duplicate columns: {duplicates_result}'
+            raise MergeErrorDuplicateColumns(err_msg)
+
+        # We are not using _dtype for left_df, only for right_df
+        # and merge_df - it is enough to just run it once
+        dtypes = PandasDtypes(right_df)
+        right_int_cols = dtypes.view_ints()
+
+        # Testing rows
+        row_count = self.rows(self._data)
+
+        merge_df = pd.merge(
+            self._data, right_df, on=on, how=how, indicator=indicator)
+
+        if row_count < self.rows(merge_df):
+            err_msg += f'Duplicate rows'
+            raise MergeErrorDuplicateRows(err_msg)
+
+        for column_name in right_int_cols:
+            merge_df[column_name] = dtypes.to_int(merge_df[column_name])
+
+        return merge_df
+
+    @staticmethod
+    def rows(
+            data_frame: pd.DataFrame) -> int:
+
+        return data_frame.shape[0]
+
+    def _duplicate(
+            self,
+            right_columns: list,
+            exclude_list: tp.Optional[list] = None) -> list:
+
+        left_columns = list(self._data.columns)
+
+        if exclude_list:
+            left_columns = self._exclude_items(
+                left_columns, exclude_list)
+            right_columns = self._exclude_items(
+                right_columns, exclude_list)
+
+        return list(set(left_columns) & set(right_columns))
+
+    @staticmethod
+    def _exclude_items(
+            items_list: list,
+            exclude_list: list) -> list:
+
+        return [
+            item for item in items_list
+            if item not in exclude_list]
+
+
+def tidy_attrs(data_frame: pd.DataFrame):
+
+    print(json.dumps(data_frame.attrs, indent=4))
+
+
+def tidy_sales(data_frame: pd.DataFrame) -> 'pd.io.formats.style.Styler':
+
+    def highlight_column(data_series: pd.Series):
+
+        row_count = data_series.shape[0]
+        # Function to highlight column, you need to hardcode column name
+        if data_series.name == 'revenue':
+            return ['background-color: lightgreen'] * row_count
+        else:
+            return [''] * row_count
+
+    def highlight_na(item_value):
+
+        # Function to highlight NA cells in column B
+        if pd.isna(item_value):
+            return 'background-color: yellow'
+        else:
+            return ''
+
+    return (
+        data_frame.style
+        .apply(highlight_column)  # Highlight column
+        .map(highlight_na, subset=['account'])  # Highlight NA in account
+        .format({
+            'close_value': '{:.2f}',
+            'revenue': '{:.2f}',
+            'close_date':
+                lambda x: x.strftime('%d.%m.%Y')
+                if pd.isna(x) is False else ''  # Show date without time, Croatian format
+        }))
+
+
+def tidy_accounts(data_frame: pd.DataFrame) -> 'pd.io.formats.style.Styler':
+
+    def highlight_duplicates(row):
+
+        column_name = 'account'
+        if (row[column_name] in
+                data_frame[column_name][data_frame[column_name].duplicated()].values):
+            return ['background-color: yellow'] * len(row)
+        else:
+            return [""] * len(row)
+
+    return data_frame.style.apply(highlight_duplicates, axis=1)
